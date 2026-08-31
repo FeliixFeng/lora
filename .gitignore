@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 模型与数据缓存
+.cache/
+data/
+*.safetensors
+*.bin
+
+# 实验结果（可选，若想提交结果可去掉）
+results/
+
+# 环境配置（含代理信息，不入库）
+.env
+
+# 系统
+.DS_Store
+
+# 下载专用代理配置
+proxy.env
+
+# VS Code 个人配置（含本机路径）
+.vscode/
