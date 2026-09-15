@@ -25,9 +25,9 @@
 - [x] **全参数微调**（00_full_ft.py，5→20 epoch）
 - [x] **LoRA 最小实验**（03_train_lora.py）
 - [x] **全参 vs LoRA 对照**（04_compare.py，可调 CONFIG）
-- [ ] PEFT 源码理解（y = Wx + BAx）
-- [ ] 保存 adapter vs 全参权重，对比体积
-- [ ] merge_and_unload 验证无推理开销
+- [x] PEFT 源码概念级理解（forward：主路 + 外挂两行）
+- [x] **只存 adapter，对比体积**（05_save_adapter.py：3.1MB vs 523MB）
+- [x] **merge_and_unload 验证无推理开销**（06_merge_unload.py：三条 OK）
 - [ ] 手写极简 LoRA Linear
 - [ ] rank 对照实验（可选，小任务上收益有限）
 
@@ -40,7 +40,9 @@ lora/
 │   ├── 01_baseline.py          # 微调前 baseline（加载 GPT-2 + 生成）
 │   ├── 02_decode_compare.py    # 解码策略对比（temperature/top_k/top_p）
 │   ├── 03_train_lora.py        # LoRA 微调（最小实验）
-│   └── 04_compare.py           # 全参 vs LoRA 一次跑完，顶部 CONFIG 可调
+│   ├── 04_compare.py           # 全参 vs LoRA 一次跑完，顶部 CONFIG 可调
+│   ├── 05_save_adapter.py      # 只存 adapter，对比体积 + 重新加载
+│   └── 06_merge_unload.py      # merge 验证：输出不变、结构回到普通模型
 ├── data/
 │   └── train_data.py           # 16 条情感标签格式样本 + 3 条测试句
 ├── scripts/
@@ -65,6 +67,8 @@ uv run python experiments/02_decode_compare.py # 解码参数对比
 uv run python experiments/00_full_ft.py        # 全参微调
 uv run python experiments/03_train_lora.py     # LoRA 微调
 uv run python experiments/04_compare.py        # 全参 vs LoRA 对照
+uv run python experiments/05_save_adapter.py   # 只存 adapter + 体积对比
+uv run python experiments/06_merge_unload.py   # merge 验证（需先跑 05）
 ```
 
 ## 任务设计
@@ -117,10 +121,30 @@ Output: [POSITIVE] I love this movie.
 - **小模型 + 小数据上时间差不明显**：固定开销大；论文里的优势要在大模型上才爆出来
 - **数据和训练量决定效果上限**：情感从全错到全对，靠的是 epoch，不是换方法
 
-## 后续计划（下一阶段）
+### 存储与部署（2026-09-15）
 
-1. 读 PEFT 源码中 LoRA 的 forward（对应 `y = Wx + BAx`）
-2. 训练后只保存 adapter，对比全参权重体积
-3. `merge_and_unload()` 后验证输出不变（无推理延迟）
-4. 手写极简 LoRA Linear，去掉框架黑盒
-5. （可选）rank 对照；小任务上预期收益有限
+| 项 | 体积 |
+|----|------|
+| 原版 GPT-2 `model.safetensors` | 522.7 MB |
+| LoRA `adapter_model.safetensors` | **3.1 MB（约 0.59%，≈1/169）** |
+
+- adapter ≈ 各层 `lora_A` + `lora_B` + 一份 `adapter_config.json` 说明书
+- **推理时仍需「底座 + adapter」合体**，不是只要 3MB；优势在多任务增量存储（每任务 +3MB，而非 +500MB）和共享底座
+- `merge_and_unload()`：`W' = W0 + (α/r)·BA`，外挂拆掉后类型变回 `GPT2LMHeadModel`；贪心解码下三条输出与 merge 前完全一致（无损）
+
+### PEFT 源码（概念级）
+
+`peft/tuners/lora/layer.py` 的 `Linear.forward` 核心两行：
+
+```python
+result = self.base_layer(x)                              # 主路 W0·x
+result = result + lora_B(lora_A(dropout(x))) * scaling   # 外挂 (α/r)·B·A·x
+```
+
+`scaling = lora_alpha / r`（本项目 16/8 = 2）。
+
+## 后续计划（下一阶段，可选）
+
+1. 手写极简 LoRA Linear，去掉框架黑盒
+2. rank 对照；小任务上预期收益有限
+3. （按需）多 adapter 切换、不同 target_modules 消融
