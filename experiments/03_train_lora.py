@@ -15,6 +15,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import sys
+import time
 sys.path.insert(0, "data")           # 让 Python 能找到 data/ 目录下的文件
 from train_data import TEST_PROMPTS  # 从数据集文件导入测试句子
 
@@ -58,10 +59,20 @@ model.print_trainable_parameters()
 from datasets import Dataset
 from train_data import TRAIN_DATA
 
+# 每条样本末尾显式加 1 个 EOS：教模型「Output 句子写完就停」
+TRAIN_DATA = [s + tokenizer.eos_token for s in TRAIN_DATA]
+
 # 定义把文本变成张量的函数
 def tokenize_fn(examples):
     enc = tokenizer(examples['text'], padding='max_length', truncation=True, max_length=64)
-    enc['labels'] = enc['input_ids'].copy()
+    # 填充位不参与 loss（labels=-100），否则模型会学一堆「预测 EOS」的假分
+    labels = []
+    for ids, mask in zip(enc['input_ids'], enc['attention_mask']):
+        labels.append([
+            tok if m == 1 else -100
+            for tok, m in zip(ids, mask)
+        ])
+    enc['labels'] = labels
     return enc
 
 dataset = Dataset.from_dict({'text': TRAIN_DATA}).map(tokenize_fn, batched=True)
@@ -75,6 +86,8 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4)
 
 
 model.train()
+
+train_start = time.time()
 
 for epoch in range(5):
     total_loss = 0.0
@@ -99,4 +112,14 @@ for epoch in range(5):
         total_loss += loss.item()
         print(f"[epoch {epoch+1}/5, step {step+1}/4] loss = {loss.item():.4f}")
 
-    print(f"==> epoch {epoch+1} 平均 loss = {total_loss/4:.4f}")        
+    print(f"==> epoch {epoch+1} 平均 loss = {total_loss/4:.4f}")
+
+train_time = time.time() - train_start
+print(f"\n⏱ 训练总耗时: {train_time:.1f}s")
+
+# 步骤 5：微调后生成，和 baseline 对比
+print("\n【微调后】")
+model.eval()
+for p in TEST_PROMPTS:
+    print(f"\n输入: {p}")
+    print(f"输出: {generate(p)}")
